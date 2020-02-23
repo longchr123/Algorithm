@@ -31,6 +31,7 @@ def _generate_segments(im_orig, scale, sigma, min_size):
     im_orig = numpy.append(
         im_orig, numpy.zeros(im_orig.shape[:2])[:, :, numpy.newaxis], axis=2)
     im_orig[:, :, 3] = im_mask
+    # cv2.imwrite('im_mask.jpg',im_mask)
 
     return im_orig
 
@@ -154,7 +155,7 @@ def _extract_regions(img):
     # get hsv image
     hsv = skimage.color.rgb2hsv(img[:, :, :3])
 
-    # pass 1: count pixel positions
+    # pass 1: count pixel positions,将按照mask划分，获取相同mask值组成的rect区域
     for y, i in enumerate(img):
 
         for x, (r, g, b, l) in enumerate(i):
@@ -175,6 +176,7 @@ def _extract_regions(img):
             if R[l]["max_y"] < y:
                 R[l]["max_y"] = y
 
+
     # pass 2: calculate texture gradient
     tex_grad = _calc_texture_gradient(img)
 
@@ -183,7 +185,7 @@ def _extract_regions(img):
 
         # colour histogram
         masked_pixels = hsv[:, :, :][img[:, :, 3] == k]
-        R[k]["size"] = len(masked_pixels / 4)
+        R[k]["size"] = len(masked_pixels / 4) # 除4的意义在哪？
         R[k]["hist_c"] = _calc_colour_hist(masked_pixels)
 
         # texture histogram
@@ -267,19 +269,18 @@ def selective_search(
     # load image and get smallest regions
     # region label is stored in the 4th value of each pixel [r,g,b,(region)]
     img = _generate_segments(im_orig, scale, sigma, min_size)
-    cv2.imwrite('f.jpg',img)
     if img is None:
         return None, {}
 
     imsize = img.shape[0] * img.shape[1]
     R = _extract_regions(img)
 
-    # extract neighbouring information
+    # extract neighbouring information 两两区域box是否IOU>0，如果是则组成一对
     neighbours = _extract_neighbours(R)
 
     # calculate initial similarities
     S = {}
-    for (ai, ar), (bi, br) in neighbours:
+    for (ai, ar), (bi, br) in neighbours: # ai与bi表示区域label，ar与br表示区域属性
         S[(ai, bi)] = _calc_sim(ar, br, imsize)
 
     # hierarchal search
@@ -288,7 +289,7 @@ def selective_search(
         # get highest similarity
         i, j = sorted(S.items(), key=lambda i: i[1])[-1][0]
 
-        # merge corresponding regions
+        # merge corresponding regions，为何加1，新合并的区域的key会一直往上累加，不会出现重复
         t = max(R.keys()) + 1.0
         R[t] = _merge_regions(R[i], R[j])
 
@@ -298,15 +299,16 @@ def selective_search(
             if (i in k) or (j in k):
                 key_to_delete.append(k)
 
-        # remove old similarities of related regions
+        # remove old similarities of related regions 删除与已经和其他区域合并的相似对
         for k in key_to_delete:
             del S[k]
         print('len R = ',len(R))
-        # calculate similarity set with the new region
+        # calculate similarity set with the new region，将新的已合并区域与删除的区域进行重新计算相似度
         for k in [a for a in key_to_delete if a != (i, j)]:
             n = k[1] if k[0] in (i, j) else k[0]
             S[(t, n)] = _calc_sim(R[t], R[n], imsize)
 
+    # 合并出来的结果是，前一部分为最基本的区域，后面为合并区域，类似于哈夫曼树的构造过程
     regions = []
     for k, r in list(R.items()):
         regions.append({
